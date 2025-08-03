@@ -1,0 +1,127 @@
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+import sqlite3
+import pandas as pd
+import time
+from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
+
+
+chrome_options = Options()
+chrome_options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
+driver = webdriver.Chrome(options=chrome_options)
+
+
+conn = sqlite3.connect('rewe_products.db')
+cursor = conn.cursor()
+
+cursor.execute('DROP TABLE IF EXISTS products')
+cursor.execute('''
+CREATE TABLE products (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    price TEXT,
+    quantity TEXT,
+    article_number TEXT
+)
+''')
+conn.commit()
+
+
+def scroll_to_bottom():
+    last_height = driver.execute_script("return document.body.scrollHeight")
+    while True:
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2)  
+        new_height = driver.execute_script("return document.body.scrollHeight")
+        if new_height == last_height:
+            break
+        last_height = new_height
+
+
+def scrape_current_page():
+    scroll_to_bottom() 
+    
+    products = driver.find_elements(By.CSS_SELECTOR, 'a.productDetailsLink')
+    print(f"Gefundene Produkte auf Seite: {len(products)}")
+    
+    for product in products:
+        try:
+            name = product.find_element(By.CSS_SELECTOR, 'h4.productTitle').text
+            
+            try:
+                price = product.find_element(By.CSS_SELECTOR, 'div.search-service-productOfferPrice').text
+            except:
+                try:
+                    price = product.find_element(By.CSS_SELECTOR, 'div.productPrice').text
+                except:
+                    try:
+                        price = product.find_element(By.CSS_SELECTOR, 'div.discountedPrice').text
+                    except:
+                        price = "Kein Preis verfügbar"
+            
+            try:
+                quantity = product.find_element(By.CSS_SELECTOR, 'div.productGrammage').text
+            except:
+                quantity = "Keine Angabe"
+            
+            href = product.get_attribute('href')
+            article_number = href.split('/')[-1]
+            
+            print(f"Speichere Produkt: {name} - {price} - {quantity} - {article_number}")
+            cursor.execute(
+                'INSERT INTO products (name, price, quantity, article_number) VALUES (?, ?, ?, ?)',
+                (name, price, quantity, article_number)
+            )
+            conn.commit()
+
+        except Exception as e:
+            print(f"Fehler beim Produkt: {e}")
+
+def scrape_all_pages(start_page=1, end_page= 250):  
+    base_url = 'https://shop.rewe.de/productList?page='
+    
+    for page in range(start_page, end_page + 1):
+        url = base_url + str(page)
+        print(f"Öffne {url}")
+        driver.get(url)
+        time.sleep(1)  
+        scrape_current_page()
+        time.sleep(1) 
+
+try:
+    scrape_all_pages(start_page=1, end_page=250)
+
+finally:
+    driver.quit()
+    conn.close()
+    print("Scraping abgeschlossen und Browser geschlossen!")
+
+print("Exportiere Datenbank nach Excel...")
+conn = sqlite3.connect('rewe_products.db')
+df = pd.read_sql_query("SELECT * FROM products", conn)
+excel_path = 'rewe_products.xlsx'
+df.to_excel(excel_path, index=False)
+
+
+wb = load_workbook(excel_path)
+ws = wb.active
+
+
+column_widths = {
+    1: 10,  
+    2: 50,  
+    3: 20,  
+    4: 30,  
+    5: 30   
+}
+
+for col_num, width in column_widths.items():
+    col_letter = get_column_letter(col_num)
+    ws.column_dimensions[col_letter].width = width
+
+wb.save(excel_path)
+conn.close()
+print(f"Fertig! Datei '{excel_path}' erstellt mit angepassten Spaltenbreiten!")
+
